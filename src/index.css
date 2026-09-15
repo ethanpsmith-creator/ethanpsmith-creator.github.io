@@ -1,0 +1,54 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+:root {
+  --background: #0d0f11;
+  --surface: #15181b;
+  --surface-raised: #191d20;
+  --surface-deep: #090b0d;
+  --surface-highlight: #202529;
+  --line: #272c30;
+  --line-strong: #3a4247;
+  --text-strong: #f0f2f1;
+  --text-muted: #899196;
+  --accent: #c7ef65;
+  --accent-bright: #d7fa7c;
+  --accent-dim: #617a35;
+  --success: #82dc8f;
+  --danger: #ff8d80;
+  --display: 'Space Grotesk', sans-serif;
+  --mono: 'DM Mono', monospace;
+  color: var(--text-strong);
+  background: var(--background);
+  font-family: var(--mono);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  background: var(--background);
+}
+
+body {
+  min-width: 320px;
+  margin: 0;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
