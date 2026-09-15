@@ -344,30 +344,63 @@ function App() {
     setGeneratedMosaicUrl(null)
   }
 
+  function randomizeMosaicSettings() {
+    const nextSeed = `chaos-${Math.random().toString(36).slice(2, 8)}`
+    setRandomSeed(nextSeed)
+    setRandomnessEnabled(true)
+    setRandomness(Math.floor(20 + Math.random() * 61))
+    setRotationEnabled(true)
+    setRotationMode(Math.random() > 0.5 ? 'random-90' : 'random')
+    setPreferVariety(Math.random() > 0.35)
+    setGenerationError(null)
+  }
+
+  function resetColourMatching() {
+    setRgbWeights({ red: 100, green: 100, blue: 100 })
+    setRgbWeightsEnabled(true)
+    setBrightnessWeight(0)
+    setBrightnessEnabled(false)
+    setSaturationWeight(0)
+    setSaturationEnabled(false)
+    setHueWeight(0)
+    setHueEnabled(false)
+    setMatchingMethod('rgb')
+    setMatchingMethodEnabled(true)
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
-        <a className="wordmark" href="/" aria-label="Mosaic Gallery home">
-          <span className="wordmark-mark">mg</span>
-          mosaic gallery
-        </a>
-        <div className="topbar-meta">
-          <span className="status-pill">local processing</span>
-          <span className="version-label">v1.0</span>
+        <div className="masthead">
+          <a className="wordmark" href="/" aria-label="Mosaic Gallery home">
+            <span className="wordmark-mark">MG</span>
+            MOSAIC GALLERY <small>v1.0</small>
+          </a>
+          <div className="topbar-meta">
+            <span className="status-pill">LOCAL ENGINE ONLINE</span>
+            <span className="version-label">BUILD 2004.09</span>
+          </div>
         </div>
+        <nav className="menu-bar" aria-label="Mosaic Gallery controls">
+          <a href="#input">[FILE]</a>
+          <a href="#engine">[ENGINE]</a>
+          <a href="#colour">[COLOUR]</a>
+          <a href="#output">[EXPORT]</a>
+          <button type="button" onClick={randomizeMosaicSettings}>[CHAOS!]</button>
+        </nav>
       </header>
 
       <section className="intro">
-        <p className="eyebrow">IMAGE PROCESSING / 01</p>
-        <h1>Build a mosaic from your own visual library.</h1>
+        <p className="eyebrow">MOSAIC-GALLERY.EXE / PERSONAL IMAGE UTILITY</p>
+        <h1>MAKE A PHOTO OUT OF <em>OTHER</em> PHOTOS.</h1>
         <p className="intro-copy">
-          Match every region of a main image to the closest source photograph.
-          Everything runs locally in your browser.
+          Feed the engine a target image and a pile of fragments. Every dial remains exposed;
+          nothing leaves your browser.
         </p>
       </section>
 
       <section className="workspace" aria-label="Mosaic workspace">
-        <aside className="source-archive">
+        <aside className="source-archive" id="input">
           <div className="archive-heading">
             <div>
               <p className="eyebrow">SOURCE ARCHIVE</p>
@@ -451,13 +484,14 @@ function App() {
               </div>
             )}
           </div>
-          <div className="stage-footer">
-            <span>{imageUrl ? 'Image loaded locally' : 'No image selected'}</span>
-            <span>{tileCount.toLocaleString()} cells</span>
+          <div className="stage-footer" aria-live="polite">
+            <span>{imageUrl ? 'TARGET BUFFER: READY' : 'TARGET BUFFER: EMPTY'}</span>
+            <span>GRID: {gridColumns} × {gridRows}</span>
+            <span>{tileCount.toLocaleString()} CELLS</span>
           </div>
         </div>
 
-        <aside className="controls-panel">
+        <aside className="controls-panel" id="engine">
           <div className="panel-heading">
             <div>
               <p className="eyebrow">CONTROL ROOM / 02</p>
@@ -682,12 +716,13 @@ function App() {
 
           <div className="weight-controls">
             <div className="feature-heading">
-              <strong>Colour matching weights</strong>
+              <strong id="colour">Colour matching weights</strong>
               <small>Choose which channels matter most</small>
               <label className="feature-toggle">
                 <input type="checkbox" checked={rgbWeightsEnabled} onChange={(event) => setRgbWeightsEnabled(event.target.checked)} />
                 On
               </label>
+              <button className="mini-reset" type="button" onClick={resetColourMatching}>RESET</button>
             </div>
 
             {(['red', 'green', 'blue'] as const).map((channel) => (
@@ -1047,6 +1082,15 @@ function App() {
                 }}
               />
             </label>
+            <button className="chaos-button" type="button" onClick={randomizeMosaicSettings}>
+              ROLL A CHAOS SEED
+            </button>
+          </div>
+
+          <div className="machine-status" aria-live="polite">
+            <span>ENGINE: {isGenerating ? 'RENDERING' : 'IDLE'}</span>
+            <span>SOURCES: {sourceImages.length} / {MAX_SOURCE_IMAGES}</span>
+            <span>OUTPUT: {outputSize.width} × {outputSize.height}</span>
           </div>
 
           <button
@@ -1075,7 +1119,7 @@ function App() {
         </aside>
       </section>
 
-      <section className={`final-output ${hasCurrentResult ? 'has-result' : ''}`} aria-label="Final mosaic preview">
+      <section className={`final-output ${hasCurrentResult ? 'has-result' : ''}`} id="output" aria-label="Final mosaic preview">
         <div className="final-output-heading">
           <div>
             <p className="eyebrow">OUTPUT / FINAL MOSAIC</p>
