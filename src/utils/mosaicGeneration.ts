@@ -41,26 +41,47 @@ type LoadedSourceImage = {
   usageCount: number
 }
 
+export type GenerateMosaicOptions = {
+  mainImageGrid: GridCell[]
+  sourceImages: SourceImageColor<string>[]
+  rgbWeights?: RgbWeights
+  outputSize?: MosaicOutputSize
+  maxRepetitions?: number
+  preferVariety?: boolean
+  randomness?: number
+  randomSource?: RandomSource
+  brightnessWeight?: number
+  saturationWeight?: number
+  hueWeight?: number
+  matchingMethod?: MatchingMethod
+  cropPosition?: CropPosition
+  rotationMode?: RotationMode
+  renderOptions?: MosaicRenderOptions
+  useEverySourceImage?: boolean
+}
+
 /**
  * Matches every main-image cell to a source image and renders the result to Canvas.
  */
 export async function generateMosaic(
-  mainImageGrid: GridCell[],
-  sourceImages: SourceImageColor<string>[],
-  rgbWeights: RgbWeights = DEFAULT_RGB_WEIGHTS,
-  outputSize: MosaicOutputSize = DEFAULT_MOSAIC_OUTPUT_SIZE,
-  maxRepetitions = DEFAULT_MAX_REPETITIONS,
-  preferVariety = false,
-  randomness = 0,
-  randomSource: RandomSource = Math.random,
-  brightnessWeight = 0,
-  saturationWeight = 0,
-  hueWeight = 0,
-  matchingMethod: MatchingMethod = 'rgb',
-  cropPosition: CropPosition = 'center',
-  rotationMode: RotationMode = 'none',
-  renderOptions: MosaicRenderOptions = {},
-  useEverySourceImage = false,
+  {
+    mainImageGrid,
+    sourceImages,
+    rgbWeights = DEFAULT_RGB_WEIGHTS,
+    outputSize = DEFAULT_MOSAIC_OUTPUT_SIZE,
+    maxRepetitions = DEFAULT_MAX_REPETITIONS,
+    preferVariety = false,
+    randomness = 0,
+    randomSource = Math.random,
+    brightnessWeight = 0,
+    saturationWeight = 0,
+    hueWeight = 0,
+    matchingMethod = 'rgb',
+    cropPosition = 'center',
+    rotationMode = 'none',
+    renderOptions = {},
+    useEverySourceImage = false,
+  }: GenerateMosaicOptions,
 ): Promise<HTMLCanvasElement> {
   if (mainImageGrid.length === 0) {
     throw new Error('The main image grid cannot be empty')

@@ -58,12 +58,15 @@ function App() {
   const [exportFormat, setExportFormat] = useState<ExportFormat>('png')
   const [exportQuality, setExportQuality] = useState(90)
   const [generatedMosaicUrl, setGeneratedMosaicUrl] = useState<string | null>(null)
+  const [generatedSettingsKey, setGeneratedSettingsKey] = useState<string | null>(null)
   const [estimatedFileSize, setEstimatedFileSize] = useState<number | null>(null)
   const generatedCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const [generatedFilename, setGeneratedFilename] = useState('mosaic-gallery.png')
   const [isGenerating, setIsGenerating] = useState(false)
   const [generationError, setGenerationError] = useState<string | null>(null)
   const sourceImagesRef = useRef<SourceImage[]>([])
+  const mainImageImportIdRef = useRef(0)
+  const generationIdRef = useRef(0)
 
   useEffect(() => {
     return () => {
@@ -77,56 +80,106 @@ function App() {
     }
   }, [])
 
-  async function handleImageChange(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]
-    if (!file) return
-
+  async function importMainImage(file: File) {
     if (!isSupportedImageFile(file)) {
-      setGenerationError('Please choose a PNG, JPG, JPEG, or SVG image.')
+      setGenerationError('Please choose a PNG, JPG, JPEG, WebP, or SVG image.')
       return
     }
 
-    setMainImageFile(file)
-    setImageUrl(URL.createObjectURL(file))
-    const analysis = await analyzeImageDetails(file)
-    setMainImageAverageRgb(analysis.averageRgb)
-    setMainImageBrightness(analysis.brightness)
-    setMainImageSaturation(analysis.saturation)
-    setMainImageHue(analysis.hue)
-    setProminentColors(analysis.prominentColors)
-    setMainImageDimensions(await getImageDimensions(file))
-    setGeneratedMosaicUrl(null)
+    const importId = ++mainImageImportIdRef.current
     setGenerationError(null)
+
+    try {
+      const [analysis, dimensions] = await Promise.all([
+        analyzeImageDetails(file),
+        getImageDimensions(file),
+      ])
+      if (importId !== mainImageImportIdRef.current) return
+
+      setMainImageFile(file)
+      setImageUrl(URL.createObjectURL(file))
+      setMainImageAverageRgb(analysis.averageRgb)
+      setMainImageBrightness(analysis.brightness)
+      setMainImageSaturation(analysis.saturation)
+      setMainImageHue(analysis.hue)
+      setProminentColors(analysis.prominentColors)
+      setMainImageDimensions(dimensions)
+    } catch (error) {
+      if (importId === mainImageImportIdRef.current) {
+        setGenerationError(error instanceof Error ? error.message : 'The selected image could not be imported.')
+      }
+    }
+  }
+
+  async function handleImageChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (file) await importMainImage(file)
+  }
+
+  async function importSourceImages(files: File[]) {
+    const supportedFiles = files.filter(isSupportedImageFile)
+
+    if (supportedFiles.length === 0) {
+      setGenerationError('Please choose PNG, JPG, JPEG, WebP, or SVG source images.')
+      return
+    }
+
+    const openSlots = Math.max(0, MAX_SOURCE_IMAGES - sourceImagesRef.current.length)
+    if (openSlots === 0) {
+      setGenerationError(`You can import up to ${MAX_SOURCE_IMAGES} source images.`)
+      return
+    }
+
+    const candidateFiles = supportedFiles.slice(0, openSlots)
+    const analyses = await Promise.allSettled(candidateFiles.map(async (file) => ({
+      file,
+      analysis: await analyzeImageDetails(file),
+    })))
+    const successfulFiles = analyses
+      .filter((result): result is PromiseFulfilledResult<{ file: File; analysis: Awaited<ReturnType<typeof analyzeImageDetails>> }> => result.status === 'fulfilled')
+      .map((result) => result.value)
+    const remainingSlots = Math.max(0, MAX_SOURCE_IMAGES - sourceImagesRef.current.length)
+    const newImages = successfulFiles.slice(0, remainingSlots).map(({ file, analysis }) => ({
+      url: URL.createObjectURL(file),
+      ...analysis,
+    }))
+
+    if (newImages.length === 0) {
+      setGenerationError(remainingSlots === 0
+        ? `You can import up to ${MAX_SOURCE_IMAGES} source images.`
+        : 'None of the selected source images could be read.')
+      return
+    }
+
+    const nextImages = [...sourceImagesRef.current, ...newImages]
+
+    sourceImagesRef.current = nextImages
+    setSourceImages(nextImages)
+    const skippedCount = supportedFiles.length - newImages.length
+    setGenerationError(skippedCount > 0
+      ? `${skippedCount} image${skippedCount === 1 ? ' was' : 's were'} skipped because it could not be read or the archive is full.`
+      : null)
   }
 
   async function handleSourceImagesChange(event: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? [])
-    const remainingSlots = MAX_SOURCE_IMAGES - sourceImages.length
-    const supportedFiles = files.filter(isSupportedImageFile)
+    event.target.value = ''
+    await importSourceImages(files)
+  }
 
-    if (supportedFiles.length === 0) {
-      setGenerationError('Please choose PNG, JPG, JPEG, or SVG source images.')
-      return
-    }
-
-    const newImages = await Promise.all(
-      supportedFiles.slice(0, remainingSlots).map(async (file) => ({
-        url: URL.createObjectURL(file),
-        ...await analyzeImageDetails(file),
-      })),
-    )
-    const nextImages = [...sourceImages, ...newImages]
-
+  function removeSourceImage(imageUrl: string) {
+    const removedImage = sourceImagesRef.current.find((sourceImage) => sourceImage.url === imageUrl)
+    const nextImages = sourceImagesRef.current.filter((sourceImage) => sourceImage.url !== imageUrl)
     sourceImagesRef.current = nextImages
     setSourceImages(nextImages)
-    setGeneratedMosaicUrl(null)
-    setGenerationError(null)
-    event.target.value = ''
+    if (removedImage) URL.revokeObjectURL(removedImage.url)
   }
 
   async function handleGenerateMosaic() {
     if (!mainImageFile || sourceImages.length === 0) return
 
+    const generationId = ++generationIdRef.current
     setIsGenerating(true)
     setGenerationError(null)
 
@@ -168,18 +221,23 @@ function App() {
         },
       })
 
+      if (generationId !== generationIdRef.current) return
+      generatedCanvasRef.current = result.canvas
       setGeneratedMosaicUrl(result.dataUrl)
+      setGeneratedSettingsKey(generationSettingsKey)
       setEstimatedFileSize(result.estimatedBytes)
       setGeneratedFilename(result.filename)
     } catch (error) {
-      setGenerationError(error instanceof Error ? error.message : 'Mosaic generation failed')
+      if (generationId === generationIdRef.current) {
+        setGenerationError(error instanceof Error ? error.message : 'Mosaic generation failed')
+      }
     } finally {
-      setIsGenerating(false)
+      if (generationId === generationIdRef.current) setIsGenerating(false)
     }
   }
 
   function handleDownloadMosaic() {
-    if (!generatedMosaicUrl) return
+    if (!hasCurrentResult || !generatedMosaicUrl) return
 
     downloadImage(generatedMosaicUrl, generatedFilename)
   }
@@ -187,7 +245,7 @@ function App() {
   function updateExportEncoding(format: ExportFormat, quality: number) {
     setExportFormat(format)
     setExportQuality(quality)
-    if (generatedCanvasRef.current && generatedMosaicUrl) {
+    if (generatedCanvasRef.current && hasCurrentResult && generatedMosaicUrl) {
       const dataUrl = canvasToDataUrl(generatedCanvasRef.current, format, quality / 100, borderColor)
       setGeneratedMosaicUrl(dataUrl)
       setEstimatedFileSize(estimateDataUrlBytes(dataUrl))
@@ -208,6 +266,43 @@ function App() {
     : repetitionPreset === 'custom'
       ? customMaxRepetitions
       : Number(repetitionPreset)
+  const generationSettingsKey = JSON.stringify({
+    imageUrl,
+    sourceImages: sourceImages.map((sourceImage) => sourceImage.url),
+    gridColumns,
+    gridRows,
+    rgbWeights,
+    rgbWeightsEnabled,
+    brightnessWeight,
+    brightnessEnabled,
+    saturationWeight,
+    saturationEnabled,
+    hueWeight,
+    hueEnabled,
+    matchingMethod,
+    matchingMethodEnabled,
+    cropPosition,
+    cropEnabled,
+    rotationMode,
+    rotationEnabled,
+    tileOpacity,
+    opacityEnabled,
+    sharpening,
+    sharpeningEnabled,
+    adaptiveOpacity,
+    showTargetImage,
+    borderPercent,
+    borderColor,
+    maxRepetitions,
+    repetitionEnabled,
+    preferVariety,
+    useEverySourceImage,
+    randomness,
+    randomnessEnabled,
+    randomSeed,
+    outputSize,
+  })
+  const hasCurrentResult = generatedMosaicUrl !== null && generatedSettingsKey === generationSettingsKey
   const closestSourceImage = mainImageAverageRgb
     ? findClosestSourceImage(
         { ...mainImageAverageRgb, brightness: mainImageBrightness, saturation: mainImageSaturation, hue: mainImageHue },
@@ -280,7 +375,14 @@ function App() {
             </div>
             <output>{sourceImages.length} / {MAX_SOURCE_IMAGES}</output>
           </div>
-          <label className="archive-dropzone">
+          <label
+            className="archive-dropzone"
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault()
+              void importSourceImages(Array.from(event.dataTransfer.files))
+            }}
+          >
             <span>+</span>
             <strong>Import fragments</strong>
             <small>Drop or browse image files</small>
@@ -297,6 +399,14 @@ function App() {
               {sourceImages.map((sourceImage, index) => (
                 <div className="source-image-card" key={sourceImage.url}>
                   <span className="source-index">{(index + 1).toString().padStart(2, '0')}</span>
+                  <button
+                    className="remove-source-image"
+                    type="button"
+                    aria-label={`Remove source image ${index + 1}`}
+                    onClick={() => removeSourceImage(sourceImage.url)}
+                  >
+                    ×
+                  </button>
                   <img src={sourceImage.url} alt={`Source image ${index + 1}`} />
                   <span className="source-image-rgb">{sourceImage.averageRgb.red} / {sourceImage.averageRgb.green} / {sourceImage.averageRgb.blue}</span>
                 </div>
@@ -356,11 +466,19 @@ function App() {
             <span className="panel-index">02</span>
           </div>
 
-          <label className="upload-zone">
+          <label
+            className="upload-zone"
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault()
+              const file = event.dataTransfer.files[0]
+              if (file) void importMainImage(file)
+            }}
+          >
             <span className="upload-icon">↑</span>
             <span>
               <strong>{imageUrl ? 'Replace photo' : 'Add a photo'}</strong>
-              <small>JPG, PNG, or WebP</small>
+              <small>Drop or browse JPG, PNG, WebP, or SVG</small>
             </span>
             <input type="file" accept={SUPPORTED_IMAGE_ACCEPT} onChange={handleImageChange} />
           </label>
@@ -943,7 +1061,7 @@ function App() {
           <button
             className="download-button"
             type="button"
-            disabled={!generatedMosaicUrl}
+            disabled={!hasCurrentResult}
             onClick={handleDownloadMosaic}
           >
             Download {exportFormat.toUpperCase()}
@@ -957,16 +1075,16 @@ function App() {
         </aside>
       </section>
 
-      <section className={`final-output ${generatedMosaicUrl ? 'has-result' : ''}`} aria-label="Final mosaic preview">
+      <section className={`final-output ${hasCurrentResult ? 'has-result' : ''}`} aria-label="Final mosaic preview">
         <div className="final-output-heading">
           <div>
             <p className="eyebrow">OUTPUT / FINAL MOSAIC</p>
-            <h2>{generatedMosaicUrl ? 'Your generated mosaic' : 'Final output appears here'}</h2>
+            <h2>{hasCurrentResult ? 'Your generated mosaic' : 'Final output appears here'}</h2>
           </div>
           <span className="panel-index">03</span>
         </div>
         <div className="final-output-stage">
-          {generatedMosaicUrl ? (
+          {hasCurrentResult && generatedMosaicUrl ? (
             <img className="generated-mosaic" src={generatedMosaicUrl} alt="Generated photo mosaic" />
           ) : (
             <span>Run the generator to inspect your final composition.</span>
@@ -974,7 +1092,7 @@ function App() {
         </div>
         <div className="final-output-footer">
           <span>{outputSize.width} × {outputSize.height} {exportFormat.toUpperCase()}</span>
-          <span>{generatedMosaicUrl ? `Ready to export${estimatedFileSize === null ? '' : ` · ~${formatFileSize(estimatedFileSize)}`}` : 'Awaiting generation'}</span>
+          <span>{hasCurrentResult ? `Ready to export${estimatedFileSize === null ? '' : ` · ~${formatFileSize(estimatedFileSize)}`}` : 'Awaiting generation'}</span>
         </div>
       </section>
 

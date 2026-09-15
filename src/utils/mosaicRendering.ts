@@ -5,6 +5,7 @@ export {
 } from './mosaicGeneration'
 export type {
   CropPosition,
+  GenerateMosaicOptions,
   MosaicOutputSize,
   MosaicRenderOptions,
   RotationMode,

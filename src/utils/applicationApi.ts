@@ -38,6 +38,7 @@ export type MosaicGenerationRequest = {
 }
 
 export type MosaicGenerationResult = {
+  canvas: HTMLCanvasElement
   dataUrl: string
   filename: string
   estimatedBytes: number
@@ -49,30 +50,30 @@ export async function generateApplicationMosaic(
   request: MosaicGenerationRequest,
 ): Promise<MosaicGenerationResult> {
   const mainImageGrid = await analyzeImageGrid(request.mainImageFile, request.grid)
-  const canvas = await generateMosaic(
+  const canvas = await generateMosaic({
     mainImageGrid,
-    request.sourceImages.map((sourceImage) => ({
+    sourceImages: request.sourceImages.map((sourceImage) => ({
       image: sourceImage.url,
       averageRgb: sourceImage.averageRgb,
       brightness: sourceImage.brightness,
       saturation: sourceImage.saturation,
       hue: sourceImage.hue,
     })),
-    request.rgbWeights,
-    request.outputSize,
-    request.maxRepetitions,
-    request.preferVariety,
-    request.randomness,
-    request.randomSource,
-    request.brightnessWeight,
-    request.saturationWeight,
-    request.hueWeight,
-    request.matchingMethod,
-    request.cropPosition,
-    request.rotationMode,
-    request.renderOptions,
-    request.useEverySourceImage,
-  )
+    rgbWeights: request.rgbWeights,
+    outputSize: request.outputSize,
+    maxRepetitions: request.maxRepetitions,
+    preferVariety: request.preferVariety,
+    randomness: request.randomness,
+    randomSource: request.randomSource,
+    brightnessWeight: request.brightnessWeight,
+    saturationWeight: request.saturationWeight,
+    hueWeight: request.hueWeight,
+    matchingMethod: request.matchingMethod,
+    cropPosition: request.cropPosition,
+    rotationMode: request.rotationMode,
+    renderOptions: request.renderOptions,
+    useEverySourceImage: request.useEverySourceImage,
+  })
 
   const dataUrl = canvasToDataUrl(
     canvas,
@@ -82,6 +83,7 @@ export async function generateApplicationMosaic(
   )
 
   return {
+    canvas,
     dataUrl,
     filename: createExportFilename(request.export.projectName, request.export.format),
     estimatedBytes: estimateDataUrlBytes(dataUrl),
