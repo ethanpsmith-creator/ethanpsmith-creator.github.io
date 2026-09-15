@@ -8,6 +8,7 @@ import {
   type SourceImageWithUsage,
 } from './colorMatching'
 import type { AverageRgb } from './imageAnalysis'
+import { circularHueDistance, hsvToRgb, rgbToHsv } from './colorConversion'
 
 export function findBestSourceImage<T>(
   targetRgb: AverageRgb & { brightness?: number; saturation?: number; hue?: number },
@@ -21,14 +22,22 @@ export function findBestSourceImage<T>(
   hueWeight = 0,
   matchingMethod: MatchingMethod = 'rgb',
   useEverySourceImage = false,
+  paletteHues: number[] = [],
+  paletteColors: AverageRgb[] = [],
 ): SourceImageMatch<T> | undefined {
   if (sourceImages.length === 0) return undefined
+
+  const paletteSources = paletteHues.length > 0
+    ? sourceImages.filter((source) => paletteHues.some((hue) => circularHueDistance(source.hue ?? 0, hue) <= 0.18))
+    : sourceImages
+  const matchingSources = paletteSources.length > 0 ? paletteSources : sourceImages
 
   const matches: Array<SourceImageMatch<T> & { score: number }> = []
   let bestScore = Number.POSITIVE_INFINITY
 
-  for (const sourceImage of sourceImages) {
-    const distance = matchingDistance(targetRgb, sourceImage, weights, undefined, brightnessWeight, saturationWeight, hueWeight, matchingMethod)
+  for (const sourceImage of matchingSources) {
+    const adjustedTarget = paletteColors.length > 0 ? remapTargetToPalette(targetRgb, paletteColors) : targetRgb
+    const distance = matchingDistance(adjustedTarget, sourceImage, weights, undefined, brightnessWeight, saturationWeight, hueWeight, matchingMethod)
     const varietyPenalty = preferVariety
       ? 1 + 0.08 * (sourceImage.usageCount / (sourceImage.usageCount + 1))
       : 1
@@ -64,4 +73,23 @@ export function findBestSourceImage<T>(
   }
 
   return weightedMatches[weightedMatches.length - 1]?.match
+}
+
+function remapTargetToPalette(
+  target: AverageRgb & { brightness?: number; saturation?: number; hue?: number },
+  paletteColors: AverageRgb[],
+) {
+  const targetHsv = rgbToHsv(target.red, target.green, target.blue)
+  const nearest = paletteColors.reduce((best, color) => {
+    const colorHue = rgbToHsv(color.red, color.green, color.blue).hue
+    const distance = circularHueDistance(targetHsv.hue, colorHue)
+    return distance < best.distance ? { color, distance } : best
+  }, { color: paletteColors[0], distance: Number.POSITIVE_INFINITY })
+  const paletteHsv = rgbToHsv(nearest.color.red, nearest.color.green, nearest.color.blue)
+  return {
+    ...hsvToRgb(paletteHsv.hue, targetHsv.saturation, targetHsv.value),
+    brightness: target.brightness,
+    saturation: target.saturation,
+    hue: paletteHsv.hue,
+  }
 }

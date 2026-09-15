@@ -32,7 +32,32 @@ export type MosaicRenderOptions = {
   sharpening?: number
 }
 
+export type MosaicTileLocation = { row: number; column: number }
+export type SourceUsage = {
+  sourceUrl: string
+  count: number
+  percentage: number
+  locations: MosaicTileLocation[]
+}
+export type MosaicGenerationMetadata = {
+  rows: number
+  columns: number
+  totalTiles: number
+  sources: SourceUsage[]
+}
+export type MosaicRenderResult = {
+  canvas: HTMLCanvasElement
+  metadata: MosaicGenerationMetadata
+}
+export type MosaicTileSelection = {
+  row: number
+  column: number
+  sourceUrl: string
+  distance: number
+}
+
 type LoadedSourceImage = {
+  sourceUrl: string
   image: HTMLImageElement
   averageRgb: SourceImageColor<string>['averageRgb']
   brightness?: number
@@ -41,48 +66,28 @@ type LoadedSourceImage = {
   usageCount: number
 }
 
-export type GenerateMosaicOptions = {
-  mainImageGrid: GridCell[]
-  sourceImages: SourceImageColor<string>[]
-  rgbWeights?: RgbWeights
-  outputSize?: MosaicOutputSize
-  maxRepetitions?: number
-  preferVariety?: boolean
-  randomness?: number
-  randomSource?: RandomSource
-  brightnessWeight?: number
-  saturationWeight?: number
-  hueWeight?: number
-  matchingMethod?: MatchingMethod
-  cropPosition?: CropPosition
-  rotationMode?: RotationMode
-  renderOptions?: MosaicRenderOptions
-  useEverySourceImage?: boolean
-}
-
 /**
  * Matches every main-image cell to a source image and renders the result to Canvas.
  */
-export async function generateMosaic(
-  {
-    mainImageGrid,
-    sourceImages,
-    rgbWeights = DEFAULT_RGB_WEIGHTS,
-    outputSize = DEFAULT_MOSAIC_OUTPUT_SIZE,
-    maxRepetitions = DEFAULT_MAX_REPETITIONS,
-    preferVariety = false,
-    randomness = 0,
-    randomSource = Math.random,
-    brightnessWeight = 0,
-    saturationWeight = 0,
-    hueWeight = 0,
-    matchingMethod = 'rgb',
-    cropPosition = 'center',
-    rotationMode = 'none',
-    renderOptions = {},
-    useEverySourceImage = false,
-  }: GenerateMosaicOptions,
-): Promise<HTMLCanvasElement> {
+export async function generateMosaicWithMetadata(
+  mainImageGrid: GridCell[],
+  sourceImages: SourceImageColor<string>[],
+  rgbWeights: RgbWeights = DEFAULT_RGB_WEIGHTS,
+  outputSize: MosaicOutputSize = DEFAULT_MOSAIC_OUTPUT_SIZE,
+  maxRepetitions = DEFAULT_MAX_REPETITIONS,
+  preferVariety = false,
+  randomness = 0,
+  randomSource: RandomSource = Math.random,
+  brightnessWeight = 0,
+  saturationWeight = 0,
+  hueWeight = 0,
+  matchingMethod: MatchingMethod = 'rgb',
+  cropPosition: CropPosition = 'center',
+  rotationMode: RotationMode = 'none',
+  renderOptions: MosaicRenderOptions = {},
+  useEverySourceImage = false,
+  selections?: MosaicTileSelection[],
+): Promise<MosaicRenderResult> {
   if (mainImageGrid.length === 0) {
     throw new Error('The main image grid cannot be empty')
   }
@@ -104,6 +109,13 @@ export async function generateMosaic(
   if (!context) throw new Error('Canvas 2D context is unavailable')
 
   const loadedSources = await Promise.all(sourceImages.map(loadSourceImage))
+  const usageBySource = new Map<string, SourceUsage>()
+  loadedSources.forEach((source) => usageBySource.set(source.sourceUrl, {
+    sourceUrl: source.sourceUrl,
+    count: 0,
+    percentage: 0,
+    locations: [],
+  }))
   const borderInset = Math.min(outputSize.width, outputSize.height)
     * Math.max(0, Math.min(50, renderOptions.borderPercent ?? 0)) / 200
   const imageAreaWidth = outputSize.width - borderInset * 2
@@ -120,30 +132,41 @@ export async function generateMosaic(
   const cellHeight = imageAreaHeight / rows
 
   for (const cell of mainImageGrid) {
+    const selected = selections?.find((selection) => selection.row === cell.row && selection.column === cell.column)
+    const selectedSource = selected
+      ? loadedSources.find((source) => source.sourceUrl === selected.sourceUrl)
+      : undefined
     const availableSources = loadedSources.filter((source) => source.usageCount < maxRepetitions)
     const candidates = availableSources.length > 0 ? availableSources : loadedSources
-    const closestMatch = findBestSourceImage(
-      {
-        ...cell.averageRgb,
-        brightness: cell.brightness,
-        saturation: cell.saturation,
-        hue: cell.hue,
-      },
-      candidates as SourceImageWithUsage<HTMLImageElement>[],
-      rgbWeights,
-      preferVariety,
-      randomness,
-      randomSource,
-      brightnessWeight,
-      saturationWeight,
-      hueWeight,
-      matchingMethod,
-      useEverySourceImage,
-    )
+    const closestMatch = selected && selectedSource
+      ? { sourceImage: selectedSource, distance: selected.distance }
+      : findBestSourceImage(
+          {
+            ...cell.averageRgb,
+            brightness: cell.brightness,
+            saturation: cell.saturation,
+            hue: cell.hue,
+          },
+          candidates as SourceImageWithUsage<HTMLImageElement>[],
+          rgbWeights,
+          preferVariety,
+          randomness,
+          randomSource,
+          brightnessWeight,
+          saturationWeight,
+          hueWeight,
+          matchingMethod,
+          useEverySourceImage,
+        )
     if (!closestMatch) continue
 
     const sourceIndex = loadedSources.findIndex((source) => source === closestMatch.sourceImage)
     loadedSources[sourceIndex].usageCount += 1
+    const usage = usageBySource.get(loadedSources[sourceIndex].sourceUrl)
+    if (usage) {
+      usage.count += 1
+      usage.locations.push({ row: cell.row, column: cell.column })
+    }
     const rotation = getRotationDegrees(rotationMode, randomSource)
     const adaptiveFactor = renderOptions.adaptiveOpacity
       ? Math.exp(-closestMatch.distance * 4)
@@ -154,13 +177,29 @@ export async function generateMosaic(
 
   applySharpening(context, canvas, renderOptions.sharpening ?? 0)
 
-  return canvas
+  const totalTiles = mainImageGrid.length
+  const sources = Array.from(usageBySource.values())
+    .map((usage) => ({
+      ...usage,
+      percentage: totalTiles === 0 ? 0 : (usage.count / totalTiles) * 100,
+    }))
+    .sort((first, second) => second.count - first.count)
+
+  return { canvas, metadata: { rows, columns, totalTiles, sources } }
+}
+
+export async function generateMosaic(
+  ...args: Parameters<typeof generateMosaicWithMetadata>
+): Promise<HTMLCanvasElement> {
+  const result = await generateMosaicWithMetadata(...args)
+  return result.canvas
 }
 
 function loadSourceImage(sourceImage: SourceImageColor<string>): Promise<LoadedSourceImage> {
   return new Promise((resolve, reject) => {
     const image = new Image()
     image.onload = () => resolve({
+      sourceUrl: sourceImage.image,
       image,
       averageRgb: sourceImage.averageRgb,
       brightness: sourceImage.brightness,

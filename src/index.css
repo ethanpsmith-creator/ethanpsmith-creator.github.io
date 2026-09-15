@@ -1,34 +1,32 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Trebuchet+MS&display=swap');
+
 :root {
-  --background: #b9bbb5;
-  --accent: #3158ab;
-  --mono: 'Courier New', Courier, monospace;
-  color: #172238;
-  background: #b9bbb5;
-  font-family: var(--mono);
+  --page: #d7d8d4;
+  --paper: #eeeee9;
+  --panel: #e3e4df;
+  --panel-dark: #c7c9c5;
+  --input: #f8f8f2;
+  --ink: #202329;
+  --muted: #62686c;
+  --line: #858c8d;
+  --line-light: #ffffff;
+  --blue: #315e9b;
+  --blue-dark: #203d69;
+  --green: #477b67;
+  --purple: #765687;
+  --red: #a84e55;
+  --display: 'Trebuchet MS', Verdana, sans-serif;
+  --mono: 'IBM Plex Mono', 'Courier New', monospace;
+  color: var(--ink);
+  background: var(--page);
+  font-family: var(--display);
   font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
 }
 
-* {
-  box-sizing: border-box;
-}
-
-html { min-width: 320px; background: #b9bbb5; }
-
-body {
-  min-width: 320px;
-  margin: 0;
-}
-
-button,
-input,
-select {
-  font: inherit;
-}
-
-button:focus-visible,
-input:focus-visible,
-select:focus-visible,
-a:focus-visible {
-  outline: 2px solid #234ca8;
-  outline-offset: 2px;
-}
+* { box-sizing: border-box; }
+html, body { min-width: 320px; margin: 0; background: var(--page); }
+body { background-image: radial-gradient(#c4c6c2 0.6px, transparent 0.6px); background-size: 4px 4px; }
+button, input, select { font: inherit; }
+button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 1px dotted var(--blue); outline-offset: 2px; }

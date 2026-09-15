@@ -2,6 +2,7 @@ import type { AverageRgb } from './imageAnalysis'
 
 export const MAX_SOURCE_IMAGES = 120
 export type OutputResolutionPreset = 'original' | '1920' | '4k' | 'custom'
+export type PaletteMode = 'none' | 'duo' | 'tritone'
 export type SourceImage = {
   url: string
   averageRgb: AverageRgb

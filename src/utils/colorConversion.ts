@@ -3,6 +3,13 @@ import type { AverageRgb } from './imageAnalysis'
 export type HsvColor = { hue: number; saturation: number; value: number }
 export type HslColor = { hue: number; saturation: number; lightness: number }
 export type LabColor = { lightness: number; a: number; b: number }
+export type RybPaletteMode = 'none' | 'duo' | 'tritone'
+
+export function getRybPaletteHues(baseHue: number, mode: RybPaletteMode): number[] {
+  if (mode === 'duo') return [baseHue, (baseHue + 0.5) % 1]
+  if (mode === 'tritone') return [baseHue, (baseHue + 1 / 3) % 1, (baseHue + 2 / 3) % 1]
+  return []
+}
 
 export function rgbToHsv(red: number, green: number, blue: number): HsvColor {
   const normalizedRed = red / 255
@@ -45,6 +52,24 @@ export function rgbToHsl(rgb: AverageRgb): HslColor {
   if (hue < 0) hue += 1
 
   return { hue, saturation, lightness }
+}
+
+export function hsvToRgb(hue: number, saturation: number, value: number): AverageRgb {
+  const scaledHue = ((hue % 1) + 1) % 1 * 6
+  const sector = Math.floor(scaledHue)
+  const chroma = value * saturation
+  const secondary = chroma * (1 - Math.abs((sector % 2) - 1))
+  const match = value - chroma
+  const colors = [
+    [chroma, secondary, 0], [secondary, chroma, 0], [0, chroma, secondary],
+    [0, secondary, chroma], [secondary, 0, chroma], [chroma, 0, secondary],
+  ][sector] ?? [0, 0, 0]
+
+  return {
+    red: Math.round((colors[0] + match) * 255),
+    green: Math.round((colors[1] + match) * 255),
+    blue: Math.round((colors[2] + match) * 255),
+  }
 }
 
 export function rgbToLab(rgb: AverageRgb): LabColor {

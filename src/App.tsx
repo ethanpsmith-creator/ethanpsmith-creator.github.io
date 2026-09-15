@@ -5,12 +5,25 @@ import { getImageDimensions, GRID_RESOLUTION_PRESETS } from './utils/gridAnalysi
 import { canvasToDataUrl, createExportFilename, downloadImage, estimateDataUrlBytes, formatFileSize, type ExportFormat } from './utils/export'
 import { generateApplicationMosaic } from './utils/applicationApi'
 import { isSupportedImageFile, SUPPORTED_IMAGE_ACCEPT } from './utils/imageFile'
-import { type CropPosition, type RotationMode } from './utils/mosaicRendering'
-import { createSeededRandom, getOutputSize, MAX_SOURCE_IMAGES, rgbToHex, type OutputResolutionPreset, type SourceImage } from './utils/projectSettings'
+import { type CropPosition, type MosaicGenerationMetadata, type RotationMode } from './utils/mosaicRendering'
+import { rgbToHsv } from './utils/colorConversion'
+import { createSeededRandom, getOutputSize, MAX_SOURCE_IMAGES, rgbToHex, type OutputResolutionPreset, type PaletteMode, type SourceImage } from './utils/projectSettings'
+import { downloadProjectFile, parseProjectFile, type MosaicProjectFile } from './utils/projectFile'
 import type { AverageRgb } from './utils/imageAnalysis'
 import './App.css'
 
+const RYB_WHEEL_COLORS: AverageRgb[] = [
+  { red: 215, green: 35, blue: 39 }, { red: 230, green: 105, blue: 35 },
+  { red: 242, green: 190, blue: 46 }, { red: 143, green: 176, blue: 55 },
+  { red: 55, green: 137, blue: 88 }, { red: 35, green: 155, blue: 166 },
+  { red: 48, green: 103, blue: 178 }, { red: 78, green: 65, blue: 157 },
+  { red: 133, green: 71, blue: 155 }, { red: 192, green: 66, blue: 126 },
+  { red: 210, green: 72, blue: 75 }, { red: 226, green: 135, blue: 49 },
+]
+
 function App() {
+  type ComparisonMode = 'original' | 'mosaic' | 'blend'
+  type PresetName = 'accurate' | 'colour-focus' | 'brightness-focus' | 'artistic' | 'random' | 'minimal'
   const [mainImageFile, setMainImageFile] = useState<File | null>(null)
   const [imageUrl, setImageUrl] = useState<string | null>(null)
   const [mainImageDimensions, setMainImageDimensions] = useState({ width: 1, height: 1 })
@@ -31,6 +44,9 @@ function App() {
   const [hueWeight, setHueWeight] = useState(0)
   const [hueEnabled, setHueEnabled] = useState(false)
   const [matchingMethod, setMatchingMethod] = useState<MatchingMethod>('rgb')
+  const [activePreset, setActivePreset] = useState<PresetName | ''>('')
+  const [paletteMode, setPaletteMode] = useState<PaletteMode>('none')
+  const [paletteColors, setPaletteColors] = useState<AverageRgb[]>([])
   const [matchingMethodEnabled, setMatchingMethodEnabled] = useState(true)
   const [cropPosition, setCropPosition] = useState<CropPosition>('center')
   const [cropEnabled, setCropEnabled] = useState(false)
@@ -44,6 +60,7 @@ function App() {
   const [showTargetImage, setShowTargetImage] = useState(false)
   const [borderPercent, setBorderPercent] = useState(0)
   const [borderColor, setBorderColor] = useState('#000000')
+  const [overlap, setOverlap] = useState(0)
   const [repetitionPreset, setRepetitionPreset] = useState('unlimited')
   const [repetitionEnabled, setRepetitionEnabled] = useState(false)
   const [customMaxRepetitions, setCustomMaxRepetitions] = useState(10)
@@ -58,15 +75,23 @@ function App() {
   const [exportFormat, setExportFormat] = useState<ExportFormat>('png')
   const [exportQuality, setExportQuality] = useState(90)
   const [generatedMosaicUrl, setGeneratedMosaicUrl] = useState<string | null>(null)
-  const [generatedSettingsKey, setGeneratedSettingsKey] = useState<string | null>(null)
+  const [generationMetadata, setGenerationMetadata] = useState<MosaicGenerationMetadata | null>(null)
+  const [selectedUsageSource, setSelectedUsageSource] = useState<string | null>(null)
+  const [comparisonMode, setComparisonMode] = useState<ComparisonMode>('mosaic')
+  const [overlayPercent, setOverlayPercent] = useState(50)
   const [estimatedFileSize, setEstimatedFileSize] = useState<number | null>(null)
   const generatedCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const [generatedFilename, setGeneratedFilename] = useState('mosaic-gallery.png')
   const [isGenerating, setIsGenerating] = useState(false)
+  const [generationProgress, setGenerationProgress] = useState(0)
   const [generationError, setGenerationError] = useState<string | null>(null)
+  const [projectNotice, setProjectNotice] = useState<string | null>(null)
+  const [activeToolbarTab, setActiveToolbarTab] = useState<string | null>(null)
+  const [showAbout, setShowAbout] = useState(false)
+  const [randomSeedCounter, setRandomSeedCounter] = useState(0)
   const sourceImagesRef = useRef<SourceImage[]>([])
-  const mainImageImportIdRef = useRef(0)
-  const generationIdRef = useRef(0)
+  const interactionVersionRef = useRef(0)
+  const generationAbortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     return () => {
@@ -80,108 +105,95 @@ function App() {
     }
   }, [])
 
-  async function importMainImage(file: File) {
-    if (!isSupportedImageFile(file)) {
-      setGenerationError('Please choose a PNG, JPG, JPEG, WebP, or SVG image.')
-      return
-    }
-
-    const importId = ++mainImageImportIdRef.current
-    setGenerationError(null)
-
-    try {
-      const [analysis, dimensions] = await Promise.all([
-        analyzeImageDetails(file),
-        getImageDimensions(file),
-      ])
-      if (importId !== mainImageImportIdRef.current) return
-
-      setMainImageFile(file)
-      setImageUrl(URL.createObjectURL(file))
-      setMainImageAverageRgb(analysis.averageRgb)
-      setMainImageBrightness(analysis.brightness)
-      setMainImageSaturation(analysis.saturation)
-      setMainImageHue(analysis.hue)
-      setProminentColors(analysis.prominentColors)
-      setMainImageDimensions(dimensions)
-    } catch (error) {
-      if (importId === mainImageImportIdRef.current) {
-        setGenerationError(error instanceof Error ? error.message : 'The selected image could not be imported.')
-      }
-    }
-  }
-
   async function handleImageChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
-    event.target.value = ''
-    if (file) await importMainImage(file)
-  }
+    if (!file) return
 
-  async function importSourceImages(files: File[]) {
-    const supportedFiles = files.filter(isSupportedImageFile)
-
-    if (supportedFiles.length === 0) {
-      setGenerationError('Please choose PNG, JPG, JPEG, WebP, or SVG source images.')
+    if (!isSupportedImageFile(file)) {
+      setGenerationError('Please choose a PNG, JPG, JPEG, or SVG image.')
       return
     }
 
-    const openSlots = Math.max(0, MAX_SOURCE_IMAGES - sourceImagesRef.current.length)
-    if (openSlots === 0) {
-      setGenerationError(`You can import up to ${MAX_SOURCE_IMAGES} source images.`)
+    const interactionVersion = ++interactionVersionRef.current
+    const nextImageUrl = URL.createObjectURL(file)
+    setMainImageFile(file)
+    setImageUrl(nextImageUrl)
+    let analysis
+    let dimensions
+    try {
+      analysis = await analyzeImageDetails(file)
+      dimensions = await getImageDimensions(file)
+    } catch (error) {
+      URL.revokeObjectURL(nextImageUrl)
+      setGenerationError(error instanceof Error ? error.message : 'The main image could not be analyzed')
+      return
+    }
+    if (interactionVersion !== interactionVersionRef.current) {
+      URL.revokeObjectURL(nextImageUrl)
       return
     }
 
-    const candidateFiles = supportedFiles.slice(0, openSlots)
-    const analyses = await Promise.allSettled(candidateFiles.map(async (file) => ({
-      file,
-      analysis: await analyzeImageDetails(file),
-    })))
-    const successfulFiles = analyses
-      .filter((result): result is PromiseFulfilledResult<{ file: File; analysis: Awaited<ReturnType<typeof analyzeImageDetails>> }> => result.status === 'fulfilled')
-      .map((result) => result.value)
-    const remainingSlots = Math.max(0, MAX_SOURCE_IMAGES - sourceImagesRef.current.length)
-    const newImages = successfulFiles.slice(0, remainingSlots).map(({ file, analysis }) => ({
-      url: URL.createObjectURL(file),
-      ...analysis,
-    }))
-
-    if (newImages.length === 0) {
-      setGenerationError(remainingSlots === 0
-        ? `You can import up to ${MAX_SOURCE_IMAGES} source images.`
-        : 'None of the selected source images could be read.')
-      return
-    }
-
-    const nextImages = [...sourceImagesRef.current, ...newImages]
-
-    sourceImagesRef.current = nextImages
-    setSourceImages(nextImages)
-    const skippedCount = supportedFiles.length - newImages.length
-    setGenerationError(skippedCount > 0
-      ? `${skippedCount} image${skippedCount === 1 ? ' was' : 's were'} skipped because it could not be read or the archive is full.`
-      : null)
+    setMainImageAverageRgb(analysis.averageRgb)
+    setMainImageBrightness(analysis.brightness)
+    setMainImageSaturation(analysis.saturation)
+    setMainImageHue(analysis.hue)
+    setProminentColors(analysis.prominentColors)
+    setMainImageDimensions(dimensions)
+    setGeneratedMosaicUrl(null)
+    setGenerationMetadata(null)
+    setSelectedUsageSource(null)
+    setGenerationError(null)
   }
 
   async function handleSourceImagesChange(event: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? [])
-    event.target.value = ''
-    await importSourceImages(files)
-  }
+    const remainingSlots = MAX_SOURCE_IMAGES - sourceImages.length
+    const supportedFiles = files.filter(isSupportedImageFile)
 
-  function removeSourceImage(imageUrl: string) {
-    const removedImage = sourceImagesRef.current.find((sourceImage) => sourceImage.url === imageUrl)
-    const nextImages = sourceImagesRef.current.filter((sourceImage) => sourceImage.url !== imageUrl)
+    if (supportedFiles.length === 0) {
+      setGenerationError('Please choose PNG, JPG, JPEG, or SVG source images.')
+      return
+    }
+
+    const interactionVersion = ++interactionVersionRef.current
+    const batchFiles = supportedFiles.slice(0, remainingSlots)
+    const batchUrls = batchFiles.map((file) => URL.createObjectURL(file))
+    let newImages
+    try {
+      newImages = await Promise.all(
+        batchFiles.map(async (file, index) => ({
+          url: batchUrls[index],
+          ...await analyzeImageDetails(file),
+        })),
+      )
+    } catch (error) {
+      batchUrls.forEach((url) => URL.revokeObjectURL(url))
+      setGenerationError(error instanceof Error ? error.message : 'One or more source images could not be analyzed')
+      return
+    }
+    if (interactionVersion !== interactionVersionRef.current) {
+      newImages.forEach((sourceImage) => URL.revokeObjectURL(sourceImage.url))
+      return
+    }
+    const nextImages = [...sourceImages, ...newImages]
+
     sourceImagesRef.current = nextImages
     setSourceImages(nextImages)
-    if (removedImage) URL.revokeObjectURL(removedImage.url)
+    setGeneratedMosaicUrl(null)
+    setGenerationMetadata(null)
+    setSelectedUsageSource(null)
+    setGenerationError(null)
+    event.target.value = ''
   }
 
   async function handleGenerateMosaic() {
     if (!mainImageFile || sourceImages.length === 0) return
 
-    const generationId = ++generationIdRef.current
     setIsGenerating(true)
+    setGenerationProgress(0)
     setGenerationError(null)
+    const abortController = new AbortController()
+    generationAbortRef.current = abortController
 
     try {
       const result = await generateApplicationMosaic({
@@ -198,6 +210,7 @@ function App() {
         preferVariety,
         randomness: randomnessEnabled ? randomness / 100 : 0,
         randomSource: createSeededRandom(randomSeed),
+        randomSeed,
         brightnessWeight: brightnessEnabled ? brightnessWeight / 100 : 0,
         saturationWeight: saturationEnabled ? saturationWeight / 100 : 0,
         hueWeight: hueEnabled ? hueWeight / 100 : 0,
@@ -214,30 +227,39 @@ function App() {
           sharpening: sharpeningEnabled ? sharpening / 100 : 0,
         },
         useEverySourceImage,
+        paletteHues: paletteColors.map((color) => rgbToHsv(color.red, color.green, color.blue).hue),
+        paletteColors,
         export: {
           format: exportFormat,
           quality: exportQuality / 100,
           projectName,
         },
-      })
+      }, setGenerationProgress, abortController.signal)
 
-      if (generationId !== generationIdRef.current) return
-      generatedCanvasRef.current = result.canvas
       setGeneratedMosaicUrl(result.dataUrl)
-      setGeneratedSettingsKey(generationSettingsKey)
+      generatedCanvasRef.current = result.canvas
+      setGenerationMetadata(result.metadata)
+      setSelectedUsageSource(null)
       setEstimatedFileSize(result.estimatedBytes)
       setGeneratedFilename(result.filename)
     } catch (error) {
-      if (generationId === generationIdRef.current) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        setGenerationError('Mosaic generation cancelled')
+      } else {
         setGenerationError(error instanceof Error ? error.message : 'Mosaic generation failed')
       }
     } finally {
-      if (generationId === generationIdRef.current) setIsGenerating(false)
+      setIsGenerating(false)
+      generationAbortRef.current = null
     }
   }
 
+  function handleCancelGeneration() {
+    generationAbortRef.current?.abort()
+  }
+
   function handleDownloadMosaic() {
-    if (!hasCurrentResult || !generatedMosaicUrl) return
+    if (!generatedMosaicUrl) return
 
     downloadImage(generatedMosaicUrl, generatedFilename)
   }
@@ -245,7 +267,7 @@ function App() {
   function updateExportEncoding(format: ExportFormat, quality: number) {
     setExportFormat(format)
     setExportQuality(quality)
-    if (generatedCanvasRef.current && hasCurrentResult && generatedMosaicUrl) {
+    if (generatedCanvasRef.current && generatedMosaicUrl) {
       const dataUrl = canvasToDataUrl(generatedCanvasRef.current, format, quality / 100, borderColor)
       setGeneratedMosaicUrl(dataUrl)
       setEstimatedFileSize(estimateDataUrlBytes(dataUrl))
@@ -266,43 +288,6 @@ function App() {
     : repetitionPreset === 'custom'
       ? customMaxRepetitions
       : Number(repetitionPreset)
-  const generationSettingsKey = JSON.stringify({
-    imageUrl,
-    sourceImages: sourceImages.map((sourceImage) => sourceImage.url),
-    gridColumns,
-    gridRows,
-    rgbWeights,
-    rgbWeightsEnabled,
-    brightnessWeight,
-    brightnessEnabled,
-    saturationWeight,
-    saturationEnabled,
-    hueWeight,
-    hueEnabled,
-    matchingMethod,
-    matchingMethodEnabled,
-    cropPosition,
-    cropEnabled,
-    rotationMode,
-    rotationEnabled,
-    tileOpacity,
-    opacityEnabled,
-    sharpening,
-    sharpeningEnabled,
-    adaptiveOpacity,
-    showTargetImage,
-    borderPercent,
-    borderColor,
-    maxRepetitions,
-    repetitionEnabled,
-    preferVariety,
-    useEverySourceImage,
-    randomness,
-    randomnessEnabled,
-    randomSeed,
-    outputSize,
-  })
-  const hasCurrentResult = generatedMosaicUrl !== null && generatedSettingsKey === generationSettingsKey
   const closestSourceImage = mainImageAverageRgb
     ? findClosestSourceImage(
         { ...mainImageAverageRgb, brightness: mainImageBrightness, saturation: mainImageSaturation, hue: mainImageHue },
@@ -344,63 +329,331 @@ function App() {
     setGeneratedMosaicUrl(null)
   }
 
-  function randomizeMosaicSettings() {
-    const nextSeed = `chaos-${Math.random().toString(36).slice(2, 8)}`
-    setRandomSeed(nextSeed)
-    setRandomnessEnabled(true)
-    setRandomness(Math.floor(20 + Math.random() * 61))
-    setRotationEnabled(true)
-    setRotationMode(Math.random() > 0.5 ? 'random-90' : 'random')
-    setPreferVariety(Math.random() > 0.35)
-    setGenerationError(null)
+  function setPaletteSelectionMode(mode: PaletteMode) {
+    setPaletteMode(mode)
+    const requiredColors = mode === 'duo' ? 2 : mode === 'tritone' ? 3 : 0
+    setPaletteColors(RYB_WHEEL_COLORS.slice(0, requiredColors))
+    setGeneratedMosaicUrl(null)
   }
 
-  function resetColourMatching() {
-    setRgbWeights({ red: 100, green: 100, blue: 100 })
-    setRgbWeightsEnabled(true)
-    setBrightnessWeight(0)
-    setBrightnessEnabled(false)
-    setSaturationWeight(0)
-    setSaturationEnabled(false)
-    setHueWeight(0)
-    setHueEnabled(false)
-    setMatchingMethod('rgb')
-    setMatchingMethodEnabled(true)
+  function togglePaletteColor(color: AverageRgb) {
+    const colorKey = rgbToHex(color)
+    const selected = paletteColors.some((selectedColor) => rgbToHex(selectedColor) === colorKey)
+    if (selected) {
+      setPaletteColors(paletteColors.filter((selectedColor) => rgbToHex(selectedColor) !== colorKey))
+    } else {
+      const limit = paletteMode === 'duo' ? 2 : 3
+      if (paletteColors.length >= limit) return
+      setPaletteColors([...paletteColors, color])
+    }
+    setGeneratedMosaicUrl(null)
+  }
+
+  function applyPreset(preset: PresetName) {
+    setActivePreset(preset)
+    setGeneratedMosaicUrl(null)
+    setGenerationMetadata(null)
+
+    if (preset === 'accurate') {
+      setRgbWeights({ red: 100, green: 100, blue: 100 }); setRgbWeightsEnabled(true)
+      setBrightnessEnabled(false); setSaturationEnabled(false); setHueEnabled(false)
+      setMatchingMethod('rgb'); setMatchingMethodEnabled(true)
+      setRepetitionPreset('unlimited'); setRepetitionEnabled(false); setPreferVariety(false); setUseEverySourceImage(false)
+      setRandomness(0); setRandomnessEnabled(false); setCropEnabled(false); setRotationEnabled(false)
+      setOpacityEnabled(false); setAdaptiveOpacity(false); setShowTargetImage(false); setSharpeningEnabled(false); setBorderPercent(0)
+      setPaletteSelectionMode('none')
+    } else if (preset === 'colour-focus') {
+      setRgbWeights({ red: 130, green: 100, blue: 130 }); setRgbWeightsEnabled(true)
+      setBrightnessEnabled(false); setSaturationWeight(150); setSaturationEnabled(true); setHueWeight(140); setHueEnabled(true)
+      setMatchingMethod('lab'); setMatchingMethodEnabled(true)
+      setRepetitionPreset('unlimited'); setRepetitionEnabled(false); setPreferVariety(false); setUseEverySourceImage(false)
+      setRandomness(0); setRandomnessEnabled(false); setCropEnabled(false); setRotationEnabled(false)
+      setPaletteSelectionMode('none')
+    } else if (preset === 'brightness-focus') {
+      setRgbWeights({ red: 80, green: 80, blue: 80 }); setRgbWeightsEnabled(true)
+      setBrightnessWeight(180); setBrightnessEnabled(true); setSaturationEnabled(false); setHueEnabled(false)
+      setMatchingMethod('rgb'); setMatchingMethodEnabled(true)
+      setRepetitionPreset('unlimited'); setRepetitionEnabled(false); setPreferVariety(false); setUseEverySourceImage(false)
+      setRandomness(0); setRandomnessEnabled(false); setCropEnabled(false); setRotationEnabled(false)
+      setPaletteSelectionMode('none')
+    } else if (preset === 'artistic') {
+      setRgbWeights({ red: 100, green: 120, blue: 100 }); setRgbWeightsEnabled(true)
+      setBrightnessWeight(80); setBrightnessEnabled(true); setSaturationWeight(120); setSaturationEnabled(true); setHueWeight(100); setHueEnabled(true)
+      setMatchingMethod('hsl'); setMatchingMethodEnabled(true)
+      setRepetitionPreset('5'); setRepetitionEnabled(true); setPreferVariety(true); setUseEverySourceImage(true)
+      setRandomness(25); setRandomnessEnabled(true); setCropEnabled(true); setCropPosition('center'); setRotationEnabled(true); setRotationMode('random-90')
+      setOpacityEnabled(true); setTileOpacity(85); setAdaptiveOpacity(true); setSharpeningEnabled(true); setSharpening(20); setBorderPercent(4)
+      setPaletteSelectionMode('tritone')
+    } else if (preset === 'random') {
+      setRgbWeights({ red: 100, green: 100, blue: 100 }); setRgbWeightsEnabled(true)
+      setBrightnessEnabled(false); setSaturationEnabled(false); setHueEnabled(false); setMatchingMethod('rgb'); setMatchingMethodEnabled(true)
+      setRepetitionPreset('10'); setRepetitionEnabled(true); setPreferVariety(true); setUseEverySourceImage(true)
+      setRandomness(70); setRandomnessEnabled(true); setRotationEnabled(true); setRotationMode('random'); setCropEnabled(false)
+      setPaletteSelectionMode('duo')
+    } else {
+      setRgbWeights({ red: 100, green: 100, blue: 100 }); setRgbWeightsEnabled(true)
+      setBrightnessEnabled(false); setSaturationEnabled(false); setHueEnabled(false); setMatchingMethod('rgb'); setMatchingMethodEnabled(true)
+      setRepetitionPreset('unlimited'); setRepetitionEnabled(false); setPreferVariety(false); setUseEverySourceImage(false)
+      setRandomness(0); setRandomnessEnabled(false); setCropEnabled(false); setRotationEnabled(false); setOpacityEnabled(false)
+      setAdaptiveOpacity(false); setShowTargetImage(false); setSharpeningEnabled(false); setBorderPercent(0)
+      setPaletteSelectionMode('none')
+    }
+  }
+
+  function focusWorkspace(target: string) {
+    document.getElementById(target)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    setActiveToolbarTab(null)
+  }
+
+  function randomizeSettings() {
+    const nextSeed = randomSeedCounter + 1
+    setRandomSeedCounter(nextSeed)
+    setRandomnessEnabled(true)
+    setRandomness(35)
+    setRandomSeed(`lab-${nextSeed}`)
+    setGeneratedMosaicUrl(null)
+    setGenerationError(null)
+    setActiveToolbarTab(null)
+  }
+
+  function setNewSeed() {
+    const nextSeed = randomSeedCounter + 1
+    setRandomSeedCounter(nextSeed)
+    setRandomSeed(`lab-${nextSeed}`)
+    setGeneratedMosaicUrl(null)
+    setActiveToolbarTab(null)
+  }
+
+  function createProjectSnapshot(): MosaicProjectFile {
+    return {
+      schemaVersion: 1,
+      projectName,
+      settings: {
+        gridResolution,
+        customResolution,
+        rgbWeights,
+        rgbWeightsEnabled,
+        brightnessWeight,
+        brightnessEnabled,
+        saturationWeight,
+        saturationEnabled,
+        hueWeight,
+        hueEnabled,
+        matchingMethod,
+        paletteMode,
+        paletteColors,
+        matchingMethodEnabled,
+        maxRepetitions: repetitionPreset,
+        repetitionEnabled,
+        customMaxRepetitions,
+        preferVariety,
+        useEverySourceImage,
+        randomness,
+        randomnessEnabled,
+        randomSeed,
+        cropPosition,
+        cropEnabled,
+        rotationMode,
+        rotationEnabled,
+        tileOpacity,
+        opacityEnabled,
+        adaptiveOpacity,
+        showTargetImage,
+        borderPercent,
+        borderColor,
+        overlap,
+        sharpening,
+        sharpeningEnabled,
+        outputResolutionPreset,
+        customOutputLongEdge,
+        exportFormat,
+        exportQuality,
+      },
+    }
+  }
+
+  function handleSaveProject() {
+    downloadProjectFile(createProjectSnapshot())
+    setActiveToolbarTab(null)
+  }
+
+  async function handleProjectFileChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+
+    try {
+      const project = parseProjectFile(await file.text())
+      const settings = project.settings
+      setProjectName(project.projectName)
+      setGridResolution(settings.gridResolution)
+      setCustomResolution(settings.customResolution)
+      setRgbWeights(settings.rgbWeights)
+      setRgbWeightsEnabled(settings.rgbWeightsEnabled)
+      setBrightnessWeight(settings.brightnessWeight)
+      setBrightnessEnabled(settings.brightnessEnabled)
+      setSaturationWeight(settings.saturationWeight)
+      setSaturationEnabled(settings.saturationEnabled)
+      setHueWeight(settings.hueWeight)
+      setHueEnabled(settings.hueEnabled)
+      setMatchingMethod(settings.matchingMethod)
+      setPaletteMode(settings.paletteMode ?? 'none')
+      setPaletteColors(settings.paletteColors ?? [])
+      setMatchingMethodEnabled(settings.matchingMethodEnabled)
+      setRepetitionPreset(settings.maxRepetitions)
+      setRepetitionEnabled(settings.repetitionEnabled)
+      setCustomMaxRepetitions(settings.customMaxRepetitions)
+      setPreferVariety(settings.preferVariety)
+      setUseEverySourceImage(settings.useEverySourceImage)
+      setRandomness(settings.randomness)
+      setRandomnessEnabled(settings.randomnessEnabled)
+      setRandomSeed(settings.randomSeed)
+      setCropPosition(settings.cropPosition)
+      setCropEnabled(settings.cropEnabled)
+      setRotationMode(settings.rotationMode)
+      setRotationEnabled(settings.rotationEnabled)
+      setTileOpacity(settings.tileOpacity)
+      setOpacityEnabled(settings.opacityEnabled)
+      setAdaptiveOpacity(settings.adaptiveOpacity)
+      setShowTargetImage(settings.showTargetImage)
+      setBorderPercent(settings.borderPercent)
+      setBorderColor(settings.borderColor)
+      setOverlap(settings.overlap)
+      setSharpening(settings.sharpening)
+      setSharpeningEnabled(settings.sharpeningEnabled)
+      setOutputResolutionPreset(settings.outputResolutionPreset)
+      setCustomOutputLongEdge(settings.customOutputLongEdge)
+      setExportFormat(settings.exportFormat)
+      setExportQuality(settings.exportQuality)
+      sourceImagesRef.current.forEach((sourceImage) => URL.revokeObjectURL(sourceImage.url))
+      sourceImagesRef.current = []
+      setSourceImages([])
+      setMainImageFile(null)
+      setImageUrl(null)
+      generatedCanvasRef.current = null
+      setGeneratedMosaicUrl(null)
+      setComparisonMode('mosaic')
+      setGenerationMetadata(null)
+      setEstimatedFileSize(null)
+      setProjectNotice('Project settings loaded. Reselect the main image and source images to generate this project.')
+      setActiveToolbarTab(null)
+    } catch (error) {
+      setGenerationError(error instanceof Error ? error.message : 'The project file could not be loaded')
+    }
+  }
+
+  const toolbarMenus: Record<string, Array<{ label: string; action: () => void; disabled?: boolean }>> = {
+    FILE: [
+      { label: 'Import main image', action: () => document.getElementById('main-image-input')?.click() },
+      { label: 'Import source fragments', action: () => document.getElementById('source-images-input')?.click() },
+      { label: 'Save project JSON', action: handleSaveProject },
+      { label: 'Load project JSON', action: () => document.getElementById('project-file-input')?.click() },
+    ],
+    EDIT: [
+      { label: 'Clear generated mosaic', action: () => { setGeneratedMosaicUrl(null); setEstimatedFileSize(null) }, disabled: !generatedMosaicUrl },
+      { label: 'Reset optional settings', action: () => { setBrightnessEnabled(false); setSaturationEnabled(false); setHueEnabled(false); setRandomnessEnabled(false); setGeneratedMosaicUrl(null); setActiveToolbarTab(null) } },
+    ],
+    VIEW: [
+      { label: 'Show image field', action: () => focusWorkspace('image-field') },
+      { label: 'Show output panel', action: () => focusWorkspace('final-output') },
+    ],
+    TOOLS: [
+      { label: 'Open control lab', action: () => focusWorkspace('control-lab') },
+      { label: 'Use every source image', action: () => { setUseEverySourceImage(true); setActiveToolbarTab(null) } },
+    ],
+    RANDOMIZE: [
+      { label: 'Randomize selection', action: randomizeSettings },
+      { label: 'New seed only', action: setNewSeed },
+    ],
+    EXPORT: [
+      { label: `Download ${exportFormat.toUpperCase()}`, action: handleDownloadMosaic, disabled: !generatedMosaicUrl },
+      { label: 'Open export controls', action: () => focusWorkspace('export-controls') },
+    ],
+    INFO: [
+      { label: 'Instagram: rivers_of_ash', action: () => window.open('https://www.instagram.com/rivers_of_ash/', '_blank', 'noopener,noreferrer') },
+      { label: 'About Mosaic Gallery', action: () => { setShowAbout(true); setActiveToolbarTab(null) } },
+    ],
   }
 
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="masthead">
-          <a className="wordmark" href="/" aria-label="Mosaic Gallery home">
-            <span className="wordmark-mark">MG</span>
-            MOSAIC GALLERY <small>v1.0</small>
-          </a>
-          <div className="topbar-meta">
-            <span className="status-pill">LOCAL ENGINE ONLINE</span>
-            <span className="version-label">BUILD 2004.09</span>
-          </div>
+        <a className="wordmark" href="/" aria-label="Mosaic Gallery home">
+          <span className="wordmark-mark">mg</span>
+          mosaic gallery
+        </a>
+        <div className="topbar-meta">
+          <span className="status-pill">local processing</span>
+          <span className="version-label">v1.0</span>
         </div>
-        <nav className="menu-bar" aria-label="Mosaic Gallery controls">
-          <a href="#input">[FILE]</a>
-          <a href="#engine">[ENGINE]</a>
-          <a href="#colour">[COLOUR]</a>
-          <a href="#output">[EXPORT]</a>
-          <button type="button" onClick={randomizeMosaicSettings}>[CHAOS!]</button>
-        </nav>
       </header>
 
+      <nav className="retro-toolbar" aria-label="Application toolbar">
+        {Object.keys(toolbarMenus).map((tab) => (
+          <div className="toolbar-menu" key={tab}>
+            <button
+              className={`toolbar-tab ${activeToolbarTab === tab ? 'active' : ''}`}
+              type="button"
+              aria-expanded={activeToolbarTab === tab}
+              onClick={() => setActiveToolbarTab(activeToolbarTab === tab ? null : tab)}
+            >
+              {tab}
+            </button>
+            {activeToolbarTab === tab && (
+              <div className="toolbar-dropdown">
+                {toolbarMenus[tab].map((item) => (
+                  <button key={item.label} type="button" disabled={item.disabled} onClick={item.action}>
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+        <span className="toolbar-spacer" />
+        <span className="toolbar-readout">LOCAL / CLIENT-SIDE</span>
+      </nav>
+
+      <div className="system-strip">
+        <span>IMAGE FIELD: {imageUrl ? 'READY' : 'EMPTY'}</span>
+        <span>SOURCES: {sourceImages.length} / {MAX_SOURCE_IMAGES}</span>
+        <span>TILES: {tileCount.toLocaleString()}</span>
+        <span>GRID: {gridColumns} × {gridRows}</span>
+        <span className="system-strip-end">MOSAIC LAB // 2004</span>
+      </div>
+
+      <input
+        id="project-file-input"
+        className="project-file-input"
+        type="file"
+        accept="application/json,.json,.mosaic.json"
+        onChange={handleProjectFileChange}
+      />
+      {projectNotice && <div className="project-notice">PROJECT LOADED: {projectNotice}</div>}
+      {showAbout && (
+        <section className="about-panel" aria-label="About Mosaic Gallery">
+          <div className="about-panel-heading">
+            <strong>ABOUT / MOSAIC GALLERY</strong>
+            <button type="button" onClick={() => setShowAbout(false)}>CLOSE [X]</button>
+          </div>
+          <p>
+            Hi! this is an idea i had, its a photo mossaic that allows you to upload up to 120 source images ranging from .png, .jpeg, jpg, and .webp, into one main photo! ive done my best to include as many feutures as possible into this website/tool, reach out to me on my instagram if you have any other recommendations, or at my email @ethan.psmith@iclpud.com. a little bit of background on me, my name is Ethan smith, as im creating this website I'm a university student, who loves phtography and all the arts for that matter, through my countless hours of doomscrolling on social media i found myself getting more immersed in a feed filled with art. and the idea recently came by me that we see so many cool ways of expressing art, memories, nostalgia, and moments; the idea to use more than one moment to capture a larger picture stuck out to me and i built this website! i hope you make cool stuff with this tool! its open source witha creative commons 0 license, @ me on instagram if you want to share!
+          </p>
+          <a href="https://www.instagram.com/rivers_of_ash/" target="_blank" rel="noreferrer">instagram.com/rivers_of_ash</a>
+        </section>
+      )}
+
       <section className="intro">
-        <p className="eyebrow">MOSAIC-GALLERY.EXE / PERSONAL IMAGE UTILITY</p>
-        <h1>MAKE A PHOTO OUT OF <em>OTHER</em> PHOTOS.</h1>
+        <p className="eyebrow">IMAGE PROCESSING / 01</p>
+        <h1>Build a mosaic from your own visual library.</h1>
         <p className="intro-copy">
-          Feed the engine a target image and a pile of fragments. Every dial remains exposed;
-          nothing leaves your browser.
+          Match every region of a main image to the closest source photograph.
+          Everything runs locally in your browser.
         </p>
       </section>
 
       <section className="workspace" aria-label="Mosaic workspace">
-        <aside className="source-archive" id="input">
+        <aside className="source-archive">
           <div className="archive-heading">
             <div>
               <p className="eyebrow">SOURCE ARCHIVE</p>
@@ -408,18 +661,12 @@ function App() {
             </div>
             <output>{sourceImages.length} / {MAX_SOURCE_IMAGES}</output>
           </div>
-          <label
-            className="archive-dropzone"
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={(event) => {
-              event.preventDefault()
-              void importSourceImages(Array.from(event.dataTransfer.files))
-            }}
-          >
+          <label className="archive-dropzone">
             <span>+</span>
             <strong>Import fragments</strong>
             <small>Drop or browse image files</small>
             <input
+              id="source-images-input"
               type="file"
               accept={SUPPORTED_IMAGE_ACCEPT}
               multiple
@@ -432,14 +679,6 @@ function App() {
               {sourceImages.map((sourceImage, index) => (
                 <div className="source-image-card" key={sourceImage.url}>
                   <span className="source-index">{(index + 1).toString().padStart(2, '0')}</span>
-                  <button
-                    className="remove-source-image"
-                    type="button"
-                    aria-label={`Remove source image ${index + 1}`}
-                    onClick={() => removeSourceImage(sourceImage.url)}
-                  >
-                    ×
-                  </button>
                   <img src={sourceImage.url} alt={`Source image ${index + 1}`} />
                   <span className="source-image-rgb">{sourceImage.averageRgb.red} / {sourceImage.averageRgb.green} / {sourceImage.averageRgb.blue}</span>
                 </div>
@@ -484,14 +723,13 @@ function App() {
               </div>
             )}
           </div>
-          <div className="stage-footer" aria-live="polite">
-            <span>{imageUrl ? 'TARGET BUFFER: READY' : 'TARGET BUFFER: EMPTY'}</span>
-            <span>GRID: {gridColumns} × {gridRows}</span>
-            <span>{tileCount.toLocaleString()} CELLS</span>
+          <div className="stage-footer">
+            <span>{imageUrl ? 'Image loaded locally' : 'No image selected'}</span>
+            <span>{tileCount.toLocaleString()} cells</span>
           </div>
         </div>
 
-        <aside className="controls-panel" id="engine">
+        <aside id="control-lab" className="controls-panel">
           <div className="panel-heading">
             <div>
               <p className="eyebrow">CONTROL ROOM / 02</p>
@@ -500,21 +738,70 @@ function App() {
             <span className="panel-index">02</span>
           </div>
 
-          <label
-            className="upload-zone"
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={(event) => {
-              event.preventDefault()
-              const file = event.dataTransfer.files[0]
-              if (file) void importMainImage(file)
-            }}
-          >
+          <label className="preset-control" htmlFor="mosaic-preset">
+            <span>
+              <strong>Generation preset</strong>
+              <small>Applies a starting configuration; every control stays editable.</small>
+            </span>
+            <select
+              id="mosaic-preset"
+              value={activePreset}
+              onChange={(event) => event.target.value && applyPreset(event.target.value as PresetName)}
+            >
+              <option value="">Custom / current</option>
+              <option value="accurate">Accurate</option>
+              <option value="colour-focus">Colour Focus</option>
+              <option value="brightness-focus">Brightness Focus</option>
+              <option value="artistic">Artistic</option>
+              <option value="random">Random</option>
+              <option value="minimal">Minimal</option>
+            </select>
+          </label>
+
+          <div className="palette-control">
+            <span>
+              <strong>Colour palette filter</strong>
+              <small>Constrain sources to a RYB-style two or three colour harmony.</small>
+            </span>
+            <select
+              id="palette-mode"
+              value={paletteMode}
+              onChange={(event) => setPaletteSelectionMode(event.target.value as PaletteMode)}
+            >
+              <option value="none">None</option>
+              <option value="duo">Duo · 2 colours</option>
+              <option value="tritone">Tritone · 3 colours</option>
+            </select>
+            {paletteMode !== 'none' && (
+              <div className="ryb-picker" role="group" aria-label="RYB colour wheel">
+                <div className="ryb-wheel">
+                  {RYB_WHEEL_COLORS.map((color, index) => {
+                    const selected = paletteColors.some((selectedColor) => rgbToHex(selectedColor) === rgbToHex(color))
+                    return (
+                      <button
+                        className={`ryb-swatch ${selected ? 'selected' : ''}`}
+                        key={rgbToHex(color)}
+                        type="button"
+                        title={`RYB colour ${index + 1}`}
+                        style={{ '--wheel-angle': `${index * 30}deg`, backgroundColor: rgbToHex(color) } as React.CSSProperties}
+                        onClick={() => togglePaletteColor(color)}
+                      />
+                    )
+                  })}
+                  <span className="ryb-wheel-label">RYB<br />{paletteColors.length}/{paletteMode === 'duo' ? 2 : 3}</span>
+                </div>
+                <small>Select exactly {paletteMode === 'duo' ? 'two' : 'three'} colours. Selected hues remap the main image for matching.</small>
+              </div>
+            )}
+          </div>
+
+          <label className="upload-zone">
             <span className="upload-icon">↑</span>
             <span>
               <strong>{imageUrl ? 'Replace photo' : 'Add a photo'}</strong>
-              <small>Drop or browse JPG, PNG, WebP, or SVG</small>
+              <small>JPG, PNG, or WebP</small>
             </span>
-            <input type="file" accept={SUPPORTED_IMAGE_ACCEPT} onChange={handleImageChange} />
+            <input id="main-image-input" type="file" accept={SUPPORTED_IMAGE_ACCEPT} onChange={handleImageChange} />
           </label>
 
           {imageUrl && (
@@ -540,6 +827,8 @@ function App() {
               onChange={(event) => {
                 setRepetitionPreset(event.target.value)
                 setGeneratedMosaicUrl(null)
+                setComparisonMode('mosaic')
+                setGenerationMetadata(null)
               }}
             >
               <option value="unlimited">Unlimited</option>
@@ -635,7 +924,7 @@ function App() {
             <p className="resolution-warning">High resolution may take longer to generate.</p>
           )}
 
-          <div className="export-resolution-control">
+          <div id="export-controls" className="export-resolution-control">
             <div className="feature-heading">
               <strong>Export resolution</strong>
               <small>Final PNG size, independent from preview grid</small>
@@ -716,13 +1005,12 @@ function App() {
 
           <div className="weight-controls">
             <div className="feature-heading">
-              <strong id="colour">Colour matching weights</strong>
+              <strong>Colour matching weights</strong>
               <small>Choose which channels matter most</small>
               <label className="feature-toggle">
                 <input type="checkbox" checked={rgbWeightsEnabled} onChange={(event) => setRgbWeightsEnabled(event.target.checked)} />
                 On
               </label>
-              <button className="mini-reset" type="button" onClick={resetColourMatching}>RESET</button>
             </div>
 
             {(['red', 'green', 'blue'] as const).map((channel) => (
@@ -962,11 +1250,14 @@ function App() {
           </div>
 
           <div className="brightness-control">
-            <div className="weight-controls-heading">
+            <div className="feature-heading">
               <strong>Brightness weight</strong>
               <small>Match normalized luminance independently</small>
               <label className="feature-toggle">
-                <input type="checkbox" checked={brightnessEnabled} onChange={(event) => setBrightnessEnabled(event.target.checked)} />
+                <input type="checkbox" checked={brightnessEnabled} onChange={(event) => {
+                  setBrightnessEnabled(event.target.checked)
+                  setGeneratedMosaicUrl(null)
+                }} />
                 On
               </label>
             </div>
@@ -990,11 +1281,14 @@ function App() {
           </div>
 
           <div className="saturation-control">
-            <div className="weight-controls-heading">
+            <div className="feature-heading">
               <strong>Saturation weight</strong>
               <small>Match normalized colour intensity independently</small>
               <label className="feature-toggle">
-                <input type="checkbox" checked={saturationEnabled} onChange={(event) => setSaturationEnabled(event.target.checked)} />
+                <input type="checkbox" checked={saturationEnabled} onChange={(event) => {
+                  setSaturationEnabled(event.target.checked)
+                  setGeneratedMosaicUrl(null)
+                }} />
                 On
               </label>
             </div>
@@ -1018,11 +1312,14 @@ function App() {
           </div>
 
           <div className="hue-control">
-            <div className="weight-controls-heading">
+            <div className="feature-heading">
               <strong>Hue weight</strong>
               <small>Match colour families around the hue circle</small>
               <label className="feature-toggle">
-                <input type="checkbox" checked={hueEnabled} onChange={(event) => setHueEnabled(event.target.checked)} />
+                <input type="checkbox" checked={hueEnabled} onChange={(event) => {
+                  setHueEnabled(event.target.checked)
+                  setGeneratedMosaicUrl(null)
+                }} />
                 On
               </label>
             </div>
@@ -1046,11 +1343,14 @@ function App() {
           </div>
 
           <div className="randomness-controls">
-            <div className="weight-controls-heading">
+            <div className="feature-heading">
               <strong>Randomness</strong>
               <small>Allow near-best colour matches</small>
               <label className="feature-toggle">
-                <input type="checkbox" checked={randomnessEnabled} onChange={(event) => setRandomnessEnabled(event.target.checked)} />
+                <input type="checkbox" checked={randomnessEnabled} onChange={(event) => {
+                  setRandomnessEnabled(event.target.checked)
+                  setGeneratedMosaicUrl(null)
+                }} />
                 On
               </label>
             </div>
@@ -1082,15 +1382,6 @@ function App() {
                 }}
               />
             </label>
-            <button className="chaos-button" type="button" onClick={randomizeMosaicSettings}>
-              ROLL A CHAOS SEED
-            </button>
-          </div>
-
-          <div className="machine-status" aria-live="polite">
-            <span>ENGINE: {isGenerating ? 'RENDERING' : 'IDLE'}</span>
-            <span>SOURCES: {sourceImages.length} / {MAX_SOURCE_IMAGES}</span>
-            <span>OUTPUT: {outputSize.width} × {outputSize.height}</span>
           </div>
 
           <button
@@ -1102,10 +1393,22 @@ function App() {
           >
             {isGenerating ? 'Generating mosaic...' : 'Generate mosaic'}
           </button>
+          {isGenerating && (
+            <div className="generation-progress" aria-live="polite">
+              <div className="generation-progress-label">
+                <span>MATCHING TILES</span>
+                <output>{generationProgress}%</output>
+              </div>
+              <progress max="100" value={generationProgress} />
+              <button className="cancel-generation-button" type="button" onClick={handleCancelGeneration}>
+                Cancel generation
+              </button>
+            </div>
+          )}
           <button
             className="download-button"
             type="button"
-            disabled={!hasCurrentResult}
+            disabled={!generatedMosaicUrl}
             onClick={handleDownloadMosaic}
           >
             Download {exportFormat.toUpperCase()}
@@ -1119,24 +1422,107 @@ function App() {
         </aside>
       </section>
 
-      <section className={`final-output ${hasCurrentResult ? 'has-result' : ''}`} id="output" aria-label="Final mosaic preview">
+      <section id="final-output" className={`final-output ${generatedMosaicUrl ? 'has-result' : ''}`} aria-label="Final mosaic preview">
         <div className="final-output-heading">
           <div>
             <p className="eyebrow">OUTPUT / FINAL MOSAIC</p>
-            <h2>{hasCurrentResult ? 'Your generated mosaic' : 'Final output appears here'}</h2>
+            <h2>{generatedMosaicUrl ? 'Your generated mosaic' : 'Final output appears here'}</h2>
           </div>
           <span className="panel-index">03</span>
         </div>
+        <div className="comparison-controls" role="group" aria-label="Image comparison mode">
+          {(['original', 'mosaic', 'blend'] as const).map((mode) => (
+            <button
+              className={comparisonMode === mode ? 'active' : ''}
+              key={mode}
+              type="button"
+              disabled={mode !== 'original' && !generatedMosaicUrl}
+              onClick={() => setComparisonMode(mode)}
+            >
+              {mode.toUpperCase()}
+            </button>
+          ))}
+          {comparisonMode === 'blend' && (
+            <label className="overlay-control" htmlFor="overlay-percent">
+              OVERLAY
+              <input
+                id="overlay-percent"
+                type="range"
+                min="0"
+                max="100"
+                value={overlayPercent}
+                onChange={(event) => setOverlayPercent(Number(event.target.value))}
+              />
+              <output>{overlayPercent}%</output>
+            </label>
+          )}
+        </div>
         <div className="final-output-stage">
-          {hasCurrentResult && generatedMosaicUrl ? (
-            <img className="generated-mosaic" src={generatedMosaicUrl} alt="Generated photo mosaic" />
+          {comparisonMode === 'original' && imageUrl ? (
+            <img className="comparison-image" src={imageUrl} alt="Original main image" />
+          ) : generatedMosaicUrl ? (
+            <>
+              {comparisonMode === 'blend' && imageUrl && (
+                <img className="comparison-image" src={imageUrl} alt="Original main image beneath mosaic" />
+              )}
+              <img
+                className={comparisonMode === 'blend' ? 'comparison-image blend-mosaic' : 'generated-mosaic'}
+                src={generatedMosaicUrl}
+                alt="Generated photo mosaic"
+                style={comparisonMode === 'blend' ? { opacity: overlayPercent / 100 } : undefined}
+              />
+              {generationMetadata && selectedUsageSource && generationMetadata.sources
+                .find((source) => source.sourceUrl === selectedUsageSource)
+                ?.locations.map((location) => (
+                  <span
+                    className="usage-highlight"
+                    key={`${location.row}-${location.column}`}
+                    style={{
+                      left: `${(location.column / generationMetadata.columns) * 100}%`,
+                      top: `${(location.row / generationMetadata.rows) * 100}%`,
+                      width: `${100 / generationMetadata.columns}%`,
+                      height: `${100 / generationMetadata.rows}%`,
+                    }}
+                  />
+                ))}
+            </>
           ) : (
             <span>Run the generator to inspect your final composition.</span>
           )}
         </div>
+        {generationMetadata && (
+          <div className="usage-visualization">
+            <div className="usage-heading">
+              <span>SOURCE USAGE / SORTED BY TILE COUNT</span>
+              <span>{selectedUsageSource ? 'CLICK AGAIN TO CLEAR' : 'CLICK A SOURCE TO LOCATE TILES'}</span>
+            </div>
+            <div className="usage-list">
+              {generationMetadata.sources.map((source, index) => {
+                const sourceIndex = sourceImages.findIndex((image) => image.url === source.sourceUrl)
+                const isSelected = selectedUsageSource === source.sourceUrl
+                return (
+                  <button
+                    className={`usage-item ${isSelected ? 'selected' : ''}`}
+                    key={source.sourceUrl}
+                    type="button"
+                    onClick={() => setSelectedUsageSource(isSelected ? null : source.sourceUrl)}
+                  >
+                    <span className="usage-rank">{(index + 1).toString().padStart(2, '0')}</span>
+                    <img src={source.sourceUrl} alt={`Used source ${sourceIndex + 1}`} />
+                    <span className="usage-detail">
+                      <strong>SOURCE {(sourceIndex + 1).toString().padStart(2, '0')}</strong>
+                      <small>{source.count}× / {source.percentage.toFixed(1)}% OF TILES</small>
+                    </span>
+                    <span className="usage-meter"><i style={{ width: `${Math.max(source.percentage, source.count > 0 ? 2 : 0)}%` }} /></span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
         <div className="final-output-footer">
           <span>{outputSize.width} × {outputSize.height} {exportFormat.toUpperCase()}</span>
-          <span>{hasCurrentResult ? `Ready to export${estimatedFileSize === null ? '' : ` · ~${formatFileSize(estimatedFileSize)}`}` : 'Awaiting generation'}</span>
+          <span>{generatedMosaicUrl ? `Ready to export${estimatedFileSize === null ? '' : ` · ~${formatFileSize(estimatedFileSize)}`}` : 'Awaiting generation'}</span>
         </div>
       </section>
 

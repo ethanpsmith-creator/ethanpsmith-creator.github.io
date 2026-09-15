@@ -11,9 +11,26 @@ npm run dev
 
 Open the local URL printed by Vite. The starter lets you choose an image from your computer, preview it as a grid of tiles, and adjust the tile density. The selected image is read locally in the browser and is never uploaded.
 
+## Hosted website
+
+This project is configured for GitHub Pages at:
+
+https://ethanpsmith-creator.github.io/mosaicgallery/
+
+Push changes to the repository to trigger the GitHub Actions deployment. The first deployment may require enabling **Settings → Pages → Source: GitHub Actions** in the repository.
+
+To serve the website on all local network interfaces, use:
+
+```bash
+npm start
+```
+
+The project is dedicated to the public domain under [CC0 1.0 Universal](LICENSE). This applies to the project code and original project assets; uploaded images remain the user's responsibility and are processed locally in the browser.
+
 ## Useful commands
 
 - `npm run dev` starts the Vite development server with hot reload.
+- `npm start` starts the Vite website server on `0.0.0.0` for local-network access.
 - `npm run build` type-checks and creates a production build in `dist/`.
 - `npm run lint` checks the source with Oxlint.
 - `npm run preview` serves the production build locally.
